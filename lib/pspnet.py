@@ -1,3 +1,5 @@
+#this code implement PSP neural architecture (Pyramid scene parsing Net) for segmentation object out of scene
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -28,7 +30,7 @@ class PSPUpsample(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(PSPUpsample, self).__init__()
         self.conv = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True), #double size of input
             nn.Conv2d(in_channels, out_channels, 3, padding=1),
             nn.PReLU()
         )
@@ -62,7 +64,7 @@ class PSPNet(nn.Module):
         )
 
     def forward(self, x):
-        f, class_f = self.feats(x) 
+        f, class_f = self.feats(x) #classification with resnet and then segmentation with PSP architecture
         p = self.psp(f)
         p = self.drop_1(p)
 
