@@ -67,7 +67,7 @@ def loss_calculation(pred_r, pred_t, target, model_points, idx, points, num_poin
 class Loss_refine(_Loss):
 
     def __init__(self, num_points_mesh, sym_list):
-        super(Loss_refine, self).__init__(True)
+        super(Loss_refine, self).__init__(reduction='mean')
         self.num_pt_mesh = num_points_mesh
         self.sym_list = sym_list
 

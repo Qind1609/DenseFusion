@@ -10,6 +10,7 @@ class KNearestNeighbor(Function):
   """ Compute k nearest neighbors for each query point.
   """
   def __init__(self, k):
+    super(KNearestNeighbor, self).__init__()
     self.k = k
 
   def forward(self, ref, query):
@@ -17,7 +18,7 @@ class KNearestNeighbor(Function):
     query = query.float().cuda()
 
     inds = torch.empty(query.shape[0], self.k, query.shape[2]).long().cuda()
-
+    print(inds)
     knn_pytorch.knn(ref, query, inds)
 
     return inds

@@ -20,9 +20,9 @@ import torchvision.transforms as transforms
 import torchvision.utils as vutils
 import torch.nn.functional as F
 from torch.autograd import Variable
-from datasets.ycb.dataset import PoseDataset
+from datasets.ycb_nvidia_fat.dataset import PoseDataset
 from lib.network import PoseNet, PoseRefineNet
-from lib.transformations import euler_matrix, quaternion_matrix, quaternion_from_matrix
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset_root', type=str, default = '', help='dataset root dir')

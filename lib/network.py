@@ -16,8 +16,6 @@ import pdb
 import torch.nn.functional as F
 from lib.pspnet import PSPNet
 
-
-
 psp_models = {
     'resnet18': lambda: PSPNet(sizes=(1, 2, 3, 6), psp_size=512, deep_features_size=256, backend='resnet18'),
     'resnet34': lambda: PSPNet(sizes=(1, 2, 3, 6), psp_size=512, deep_features_size=256, backend='resnet34'),
@@ -32,8 +30,7 @@ class ModifiedResnet(nn.Module):
         super(ModifiedResnet, self).__init__()
 
         self.model = psp_models['resnet18'.lower()]()
-        self.model = nn.parallel.DistributedDataParallel(self.model) #by mulprocessing
-        #nn.DataParallel(self.model) #slit data and feed it to GPUS by multi threading
+        self.model = nn.DataParallel(self.model)
 
     def forward(self, x):
         x = self.model(x)
@@ -42,8 +39,8 @@ class ModifiedResnet(nn.Module):
 class PoseNetFeat(nn.Module):
     def __init__(self, num_points):
         super(PoseNetFeat, self).__init__()
-        self.conv1 = torch.nn.Conv1d(3, 64, 1)      #RGB 3channel input, output: tensor 64 channels, kernel size 1
-        self.conv2 = torch.nn.Conv1d(64, 128, 1)    
+        self.conv1 = torch.nn.Conv1d(3, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
 
         self.e_conv1 = torch.nn.Conv1d(32, 64, 1)
         self.e_conv2 = torch.nn.Conv1d(64, 128, 1)
@@ -53,7 +50,7 @@ class PoseNetFeat(nn.Module):
 
         self.ap1 = torch.nn.AvgPool1d(num_points)
         self.num_points = num_points
-    def forward(self, x, emb): #feature and embeddings feature
+    def forward(self, x, emb):
         x = F.relu(self.conv1(x))
         emb = F.relu(self.e_conv1(emb))
         pointfeat_1 = torch.cat((x, emb), dim=1)
@@ -74,7 +71,7 @@ class PoseNet(nn.Module):
     def __init__(self, num_points, num_obj):
         super(PoseNet, self).__init__()
         self.num_points = num_points
-        self.cnn = ModifiedResnet() #output an image with segmentation for each object
+        self.cnn = ModifiedResnet()
         self.feat = PoseNetFeat(num_points)
         
         self.conv1_r = torch.nn.Conv1d(1408, 640, 1)
@@ -96,12 +93,12 @@ class PoseNet(nn.Module):
         self.num_obj = num_obj
 
     def forward(self, img, x, choose, obj):
-        out_img = self.cnn(img)                             #RGB images after segmentation
+        out_img = self.cnn(img)
         
-        bs, di, _, _ = out_img.size()                       #
+        bs, di, _, _ = out_img.size()
 
-        emb = out_img.view(bs, di, -1)                      #re-shape RGB images 
-        choose = choose.repeat(1, di, 1)                    #unknow
+        emb = out_img.view(bs, di, -1)
+        choose = choose.repeat(1, di, 1)
         emb = torch.gather(emb, 2, choose).contiguous()
         
         x = x.transpose(2, 1).contiguous()

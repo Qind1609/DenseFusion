@@ -24,7 +24,7 @@ def loss_calculation(semantic, target):
 class Loss(_Loss):
 
     def __init__(self):
-        super(Loss, self).__init__(True)
+        super(Loss, self).__init__(reduction='mean')
 
     def forward(self, semantic, target):
         return loss_calculation(semantic, target)
