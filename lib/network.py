@@ -121,6 +121,7 @@ class PoseNet(nn.Module):
         cx = torch.sigmoid(self.conv4_c(cx)).view(bs, self.num_obj, 1, self.num_points)
         
         b = 0
+        print(obj[b], rx[b])
         out_rx = torch.index_select(rx[b], 0, obj[b])
         out_tx = torch.index_select(tx[b], 0, obj[b])
         out_cx = torch.index_select(cx[b], 0, obj[b])

@@ -70,14 +70,14 @@ class PoseDataset(data.Dataset):
         self.list_of_class = list(self.cld.keys())
         
         #need to resize image to 848x480 (WxH)
-        self.xmap = np.array([[j for i in range(848)] for j in range(480)])
-        self.ymap = np.array([[i for i in range(848)] for j in range(480)])
-        self.resize = transforms.Resize((480,848))
+        self.xmap = np.array([[j for i in range(960)] for j in range(540)])
+        self.ymap = np.array([[i for i in range(960)] for j in range(540)])
+        self.resize = transforms.Resize((540,960))
         self.trancolor = transforms.ColorJitter(0.2, 0.2, 0.2, 0.05)
         self.noise_img_loc = 0.0
         self.noise_img_scale = 7.0
         
-        self.minimum_num_pt = 50
+        self.minimum_num_pt = 100
         self.norm = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         
         self.transform = transforms.Compose([
@@ -96,7 +96,7 @@ class PoseDataset(data.Dataset):
         print(len(self.list))
 
     def __getitem__(self, index):
-        
+         
         # get a RGB image
         img = Image.open('{0}/{1}.jpg'.format(self.root, self.list[index]))
         # get depth map
@@ -123,43 +123,47 @@ class PoseDataset(data.Dataset):
         add_front = False
         
         obj = np.unique(label).tolist()[1:] #  seg_class_id of objects in the label image
+        
         #create noise label
         if self.add_noise:
             img = self.trancolor(img)
-            for k in range(5):
+            while 1:
                 seed = random.choice(self.mixed)
                 front = np.array(self.trancolor(self.resize(Image.open('{0}/{1}.jpg'.format(self.root, seed))).convert("RGB")))
                 front = np.transpose(front, (2, 0, 1))                    # change image from layer in depth to layer in stack
                 f_label = np.array(self.resize(Image.open('{0}/{1}.seg.png'.format(self.root, seed))))
                 front_label = np.unique(f_label).tolist()[1:] #remove element '0' -> array of seg_class_id 
-                if len(front_label) < self.front_num:
+                if len(front_label) < self.front_num: #get image which have number of objects >= (3)
                    continue
-                front_label = random.sample(front_label, self.front_num) #choice random 2 object
+                front_label = random.sample(front_label, self.front_num) #choice random 2 object in image
                 for f_i in front_label:
-                    mk = ma.getmaskarray(ma.masked_not_equal(f_label, f_i)) #get mask not object in each loop
+                    mk = ma.getmaskarray(ma.masked_not_equal(f_label, f_i)) #get mask of pixel which not object in each loop
                     if f_i == front_label[0]:
-                        mask_front = mk
+                        mask_front = mk             #   mask for the first chosen object in arr front_label
                     else:
-                        mask_front = mask_front * mk        # get the intersection (output the part of image not have object in front_label)
+                        mask_front = mask_front * mk        # get masks of all object in arr front_label (2 object)
+                
                 t_label = label * mask_front                # noise label with some not correct segmentation
                 if len(t_label.nonzero()[0]) > 1000:
                     label = t_label
                     add_front = True
                     break
-
+                #   make sure noise image always have more than 100 pixel
         
         # obj = np.array([obj_setting['exported_objects'][i]['segmentation_class_id'] for i in range(obj_setting['exported_objects'])]).flatten().astype(np.int32)                
         
+        # Get the region which has depth!=0 and number of pixels (has object)  > minimum_num_pt 
         while 1:
-            idx = np.random.randint(0, len(obj))                            # get a random object
+            idx = np.random.randint(0, len(obj))                            # get a random object in the image
             mask_depth = ma.getmaskarray(ma.masked_not_equal(depth, 0))     # get mask of region that depth not equal 0
             mask_label = ma.getmaskarray(ma.masked_equal(label, obj[idx]))  # sign mask for the pixel which is labeled with its class id / segmentation_class_id
             mask = mask_label * mask_depth                                  # only get depth info at pixel labeled of the object random gotten
             if len(mask.nonzero()[0]) > self.minimum_num_pt:
                 break
         
+        
         # Get bounding box
-        rmin, rmax, cmin, cmax = get_bbox(mask_label)           # bbox for the choosen object
+        rmin, rmax, cmin, cmax = get_bbox(mask_label, name_object_masked)           # bbox for the choosen object
         
         img = np.transpose(np.array(img)[:, :, :3], (2, 0, 1))[:, rmin:rmax, cmin:cmax] # crop image out of bounding box
 
@@ -189,14 +193,7 @@ class PoseDataset(data.Dataset):
         idx_in_class_txt = self.list_of_class.index(name_object_masked[:-4])
         print(name_object_masked)
         print(id_json)
-        with open('name.txt','w') as f:
-                    n = str(name_object_masked)
-                    t = str(id_json)
-                    
-                    f.write(n+'\n')
-                    f.write(t+'\n')
-                    f.close
-        # Rotation
+        
         target_r = np.array(meta['objects'][id_json]['quaternion_xyzw'])
         target_r = R.from_quat(target_r).as_matrix()
 
@@ -207,21 +204,32 @@ class PoseDataset(data.Dataset):
         add_t = np.array([random.uniform(-self.noise_trans, self.noise_trans) for i in range(3)])
 
         choose = mask[rmin:rmax, cmin:cmax].flatten().nonzero()[0]
+        with open('name.txt','w') as f:
+                    n = str(name_object_masked)
+                    t = str(id_json)
+                    c = str(choose)
+                    f.write(n+'\n')
+                    f.write(t+'\n')
+                    f.write(c+'\n')
+                    f.close
+        try:
+            if len(choose) > self.num_pt:
+                c_mask = np.zeros(len(choose), dtype=int)
+                c_mask[:self.num_pt] = 1
+                np.random.shuffle(c_mask)
+                choose = choose[c_mask.nonzero()]
+            else:
+                choose = np.pad(choose, (0, self.num_pt - len(choose)), 'wrap')
+            
         
-        if len(choose) > self.num_pt:
-            c_mask = np.zeros(len(choose), dtype=int)
-            c_mask[:self.num_pt] = 1
-            np.random.shuffle(c_mask)
-            choose = choose[c_mask.nonzero()]
-        else:
-            choose = np.pad(choose, (0, self.num_pt - len(choose)), 'wrap')
-        
-        # choose point for pointcloud
-        depth_masked = depth[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
-        xmap_masked = self.xmap[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
-        ymap_masked = self.ymap[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
-        choose = np.array([choose])
-
+            # Rotation
+            # choose point for pointcloud
+            depth_masked = depth[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
+            xmap_masked = self.xmap[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
+            ymap_masked = self.ymap[rmin:rmax, cmin:cmax].flatten()[choose][:, np.newaxis].astype(np.float32)
+            choose = np.array([choose])
+        except ValueError:
+                choose = np.array([])
         # Calculate Real Coordinate
         cam_scale = 10000
         pt2 = depth_masked / cam_scale
@@ -259,7 +267,7 @@ class PoseDataset(data.Dataset):
                 self.norm(torch.from_numpy(img_masked.astype(np.float32))), \
                 torch.from_numpy(target.astype(np.float32)), \
                 torch.from_numpy(model_points.astype(np.float32)), \
-                torch.LongTensor([int(idx_in_class_txt) - 1]) #index indicate type of object
+                torch.LongTensor([int(idx_in_class_txt)]) #index indicate type of object
 
     def __len__(self):
         return self.length
@@ -289,8 +297,8 @@ class PoseDataset(data.Dataset):
 
 
 border_list = [-1, 40, 80, 120, 160, 200, 240, 280, 320, 360, 400, 440, 480, 520, 560, 600, 640, 680]
-img_width = 848
-img_length = 480
+img_width = 960
+img_length = 540
 
 def get_bbox(label):
     rows = np.any(label, axis=1)
