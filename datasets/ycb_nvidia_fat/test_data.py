@@ -15,11 +15,11 @@ import scipy.misc
 import scipy.io as scio
 
 np.set_printoptions(threshold=sys.maxsize)
-path = "/home/qind/Desktop/ycb_test/data/0000/"
-input_file = Image.open(path+'000761-label.png')
+path = "/media/qind/Data/QIND-DATA/fat/mixed/temple_3/"
+input_file = Image.open(path+'001026.left.depth.png')
 
 
-input_file = np.array(input_file) #*(255/(np.max(input_file)-np.min(input_file)))
+input_file = np.array(input_file)*(255/(np.max(input_file)-np.min(input_file)))
 
 data1 = Image.fromarray(input_file)
 data1.show()

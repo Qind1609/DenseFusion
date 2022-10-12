@@ -4,12 +4,14 @@
 # Written by Chen
 # --------------------------------------------------------
 
+from cgi import test
 import _init_paths
 import argparse
 import os
 import random
 import time
 import numpy as np
+import cv2
 import torch
 import torch.nn as nn
 import torch.nn.parallel
@@ -25,6 +27,7 @@ from lib.network import PoseNet, PoseRefineNet
 from lib.loss import Loss
 from lib.loss_refiner import Loss_refine
 from lib.utils import setup_logger
+from torch.utils.tensorboard import SummaryWriter
 
 
 class LF:
@@ -43,8 +46,9 @@ class LF:
         self.noise_trans = 0.03
         self.iteration = 2
         self.nepoch = 500
-        self.resume_posenet = ""  # for resume training
-        self.resume_refinenet = ""  # for resume training
+        self.resume_posenet = True
+        self.retrain = False
+        self.resume_refinenet = False
         self.start_epoch = 1
         self.seed = random.randint(1, 10000)
         self.num_objects = 21
@@ -59,8 +63,8 @@ class FaT:
 
         self.dataset = "ycb_nvidia_fat"
         self.dataset_root = "/media/qind/Data/QIND-DATA/fat"
-        self.batch_size = 1
-        self.workers = 1
+        self.batch_size = 8
+        self.workers = 5
         self.lr = 0.0001
         self.lr_decay = 0.3
         self.w = 0.015
@@ -70,8 +74,10 @@ class FaT:
         self.noise_trans = 0.03
         self.iteration = 2
         self.nepoch = 500
-        self.resume_posenet = ""  # for resume training
-        self.resume_refinenet = ""  # for resume training
+        self.resume_posenet = True
+        self.retrain = False
+        self.resume_refinenet = False
+
         self.start_epoch = 1
         self.seed = 1506
         self.num_objects = 21
@@ -97,8 +103,9 @@ class CustomDataset:
         self.noise_trans = 0.03
         self.iteration = 2
         self.nepoch = 500
-        self.resume_posenet = ""  # for resume training
-        self.resume_refinenet = ""  # for resume training
+        self.resume_posenet = True
+        self.retrain = False
+        self.resume_refinenet = False
         self.start_epoch = 1
         self.seed = random.randint(1, 10000)
         self.num_objects = 21
@@ -109,7 +116,9 @@ class CustomDataset:
 
 
 def main():
+    #torch.backends.cudnn.benchmark = True
     if torch.cuda.is_available():
+        print('cuda')
         device = torch.device('cuda')
     else:
         device = torch.device('cpu')
@@ -134,16 +143,18 @@ def main():
     # Pose-Refine net
     refiner = PoseRefineNet(num_points=para.num_points, num_obj=para.num_objects)
     refiner.to(device)
+    last_epoch = 0
 
-    if para.resume_posenet != "":
-        estimator.load_state_dict(
-            torch.load("{0}/{1}".format(para.out_dir, para.resume_posenet))
-        )
+    if (not para.retrain) and para.resume_posenet:
+        
+        check_point1 = torch.load("{0}/pose_model_current.pth".format(para.out_dir))
+        last_epoch = check_point1["epoch"]    #
+        estimator.load_state_dict(check_point1["estimator_state_dict"])
 
-    if para.resume_refinenet != "":
-        refiner.load_state_dict(
-            torch.load("{0}/{1}".format(para.out_dir, para.resume_refinenet))
-        )
+    if (not para.retrain) and para.resume_refinenet:
+        check_point2 = torch.load("{0}/pose_refine_model_current.pth".format(para.out_dir))
+        last_epoch = check_point2["epoch"]
+        refiner.load_state_dict(check_point2["refiner_state_dict"])
         para.refine_start = True
         para.decay_start = True
         para.lr *= para.lr_decay
@@ -194,10 +205,18 @@ def main():
         )
 
     dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=1, shuffle=True, num_workers=para.workers
+        dataset, 
+        batch_size=1, 
+        shuffle=True, 
+        num_workers=para.workers,
+        pin_memory=True
     )
     testdataloader = torch.utils.data.DataLoader(
-        test_dataset, batch_size=1, shuffle=False, num_workers=para.workers
+        test_dataset, 
+        batch_size=1, 
+        shuffle=False, 
+        num_workers=para.workers,
+        pin_memory=True
     )
 
     para.sym_list = dataset.get_sym_list()
@@ -213,304 +232,366 @@ def main():
     criterion_refine = Loss_refine(para.num_points_mesh, para.sym_list)
 
     best_test = np.Inf
+    """
+    state, points, choose, img, target, model_points, idx = next(iter(dataloader))
+    points, choose, img, target, model_points, idx = (
+                            Variable(points).to(device),
+                            Variable(choose).to(device),
+                            Variable(img).to(device),
+                            Variable(target).to(device),
+                            Variable(model_points).to(device),
+                            Variable(idx).to(device),
+                        )
+    pred_r, pred_t, pred_c, emb = estimator(img, points, choose, idx)
+        
+    loss, dis, new_points, new_target = criterion(
+                        pred_r,
+                        pred_t,
+                        pred_c,
+                        target,
+                        model_points,
+                        idx,
+                        points,
+                        para.w,
+                        para.refine_start,
+                    )
+    """
+    """
+    with SummaryWriter('/home/qind/Desktop/Pose_Estimate/DenseFusion/experiments/PoseNet') as writer:
+        
+        writer.add_graph(estimator, (img, points, choose, idx))
+        writer.close()
 
-    if para.start_epoch == 1:
+    with SummaryWriter('/home/qind/Desktop/Pose_Estimate/DenseFusion/experiments/PoseRefineNet') as writer:
+        
+        writer.add_graph(refiner, (new_points, emb, idx))
+        writer.close()
+    """
+    if para.retrain:
+        para.start_epoch = 1
         for log in os.listdir(para.log_dir):
             os.remove(os.path.join(para.log_dir, log))
+    elif not para.retrain:
+        para.start_epoch = last_epoch 
+        
     st_time = time.time()
-    
-    for epoch in range(para.start_epoch, para.nepoch):
-        logger = setup_logger(
-            "epoch%d" % epoch, os.path.join(para.log_dir, "epoch_%d_log.txt" % epoch)
-        )
-        logger.info(
-            "Train time {0}".format(
-                time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time))
-                + ", "
-                + "Training started"
+
+    with SummaryWriter('/home/qind/Desktop/Pose_Estimate/DenseFusion/experiments/result') as writer:
+        
+        for epoch in range(para.start_epoch, para.nepoch):
+            logger = setup_logger(
+                "epoch%d" % epoch, os.path.join(para.log_dir, "epoch_%d_log.txt" % epoch)
             )
-        )
-        train_count = 0
-        train_dis_avg = 0.0
-        if para.refine_start:
-            estimator.eval()
-            refiner.train()
-        else:
-            estimator.train()
-        # reset optimizer for a new training loop
-        optimizer.zero_grad()
-
-        for rep in range(para.repeat_epoch):
-            for i, data in enumerate(dataloader, 0):
-                points, choose, img, target, model_points, idx = data
-                points, choose, img, target, model_points, idx = (
-                    Variable(points).to(device),
-                    Variable(choose).to(device),
-                    Variable(img).to(device),
-                    Variable(target).to(device),
-                    Variable(model_points).to(device),
-                    Variable(idx).to(device),
-                )
-                with open('var.txt','w') as f:
-                    r1 = str(points.size())
-                    r = str(points)
-                    t1 = str(choose.size())
-                    t = str(choose)
-                    c1 = str(img.size())
-                    c = str(img)
-                    e1 = str(target.size())
-                    e = str(target)
-                    a1 = str(model_points.size())
-                    a = str(model_points)
-                    g1 = str(idx.size())
-                    g = str(idx)
-                    f.write(r1+'\n')
-                    f.write(r+'\n')
-                    f.write(t1+'\n')
-                    f.write(t+'\n')
-                    f.write(c1+'\n')
-                    f.write(c+'\n')
-                    f.write(e1+'\n')
-                    f.write(e+'\n')
-                    f.write(a1+'\n')
-                    f.write(a+'\n')
-                    f.write(g1+'\n')
-                    f.write(g+'\n')
-                    f.close
-                
-                pred_r, pred_t, pred_c, emb = estimator(img, points, choose, idx)
-                with open('abc.txt','w') as f:
-                    r = str(pred_r)
-                    t = str(pred_t)
-                    c = str(pred_c)
-                    e = str(emb)
-                    f.write(r+'\n')
-
-                    f.write(t+'\n')
-                    f.write(c+'\n')
-                    f.write(e+'\n')
-                    f.close
-                loss, dis, new_points, new_target = criterion(
-                    pred_r,
-                    pred_t,
-                    pred_c,
-                    target,
-                    model_points,
-                    idx,
-                    points,
-                    para.w,
-                    para.refine_start,
-                )
-                print('>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<')
-                if para.refine_start:
-                    for ite in range(0, para.iteration):
-                        pred_r, pred_t = refiner(new_points, emb, idx)
-                        dis, new_points, new_target = criterion_refine(
-                            pred_r, pred_t, new_target, model_points, idx, new_points
-                        )
-                        dis.backward()
-                else:
-                    loss.backward()
-
-                train_dis_avg += dis.item()
-                train_count += 1
-
-                if train_count % para.batch_size == 0:
-                    logger.info(
-                        "Train time {0} Epoch {1} Batch {2} Frame {3} Avg_dis:{4}".format(
-                            time.strftime(
-                                "%Hh %Mm %Ss", time.gmtime(time.time() - st_time)
-                            ),
-                            epoch,
-                            int(train_count / para.batch_size),
-                            train_count,
-                            train_dis_avg / para.batch_size,
-                        )
-                    )
-                    optimizer.step()
-                    optimizer.zero_grad()
-                    train_dis_avg = 0
-
-                if train_count != 0 and train_count % 1000 == 0:
-                    if para.refine_start:
-                        torch.save(
-                            refiner.state_dict(),
-                            "{0}/pose_refine_model_current.pth".format(para.out_dir),
-                        )
-                    else:
-                        torch.save(
-                            estimator.state_dict(),
-                            "{0}/pose_model_current.pth".format(para.out_dir),
-                        )
-
-        print(">>>>>>>>----------epoch {0} train finish---------<<<<<<<<".format(epoch))
-
-        logger = setup_logger(
-            "epoch%d_test" % epoch,
-            os.path.join(para.log_dir, "epoch_%d_test_log.txt" % epoch),
-        )
-        logger.info(
-            "Test time {0}".format(
-                time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time))
-                + ", "
-                + "Testing started"
-            )
-        )
-        test_dis = 0.0
-        test_count = 0
-        estimator.eval()
-        refiner.eval()
-
-        for j, data in enumerate(testdataloader, 0):
-            points, choose, img, target, model_points, idx = data
-            points, choose, img, target, model_points, idx = (
-                Variable(points).to(device),
-                Variable(choose).to(device),
-                Variable(img).to(device),
-                Variable(target).to(device),
-                Variable(model_points).to(device),
-                Variable(idx).to(device),
-            )
-            pred_r, pred_t, pred_c, emb = estimator(img, points, choose, idx)
-            _, dis, new_points, new_target = criterion(
-                pred_r,
-                pred_t,
-                pred_c,
-                target,
-                model_points,
-                idx,
-                points,
-                para.w,
-                para.refine_start,
-            )
-
-            if para.refine_start:
-                for ite in range(0, para.iteration):
-                    pred_r, pred_t = refiner(new_points, emb, idx)
-                    dis, new_points, new_target = criterion_refine(
-                        pred_r, pred_t, new_target, model_points, idx, new_points
-                    )
-
-            test_dis += dis.item()
             logger.info(
-                "Test time {0} Test Frame No.{1} dis:{2}".format(
-                    time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time)),
-                    test_count,
-                    dis,
+                "Train time {0}".format(
+                    time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time))
+                    + ", "
+                    + "Training started"
                 )
             )
-
-            test_count += 1
-
-        test_dis = test_dis / test_count
-        logger.info(
-            "Test time {0} Epoch {1} TEST FINISH Avg dis: {2}".format(
-                time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time)),
-                epoch,
-                test_dis,
-            )
-        )
-        if test_dis <= best_test:
-            best_test = test_dis
+            train_count = 0
+            train_dis_avg = 0.0
             if para.refine_start:
-                torch.save(
-                    refiner.state_dict(),
-                    "{0}/pose_refine_model_{1}_{2}.pth".format(
-                        para.out_dir, epoch, test_dis
-                    ),
-                )
+                estimator.eval()
+                refiner.train()
+                for parameter in refiner.parameters():
+                    parameter.grad = None
             else:
-                torch.save(
-                    estimator.state_dict(),
-                    "{0}/pose_model_{1}_{2}.pth".format(para.out_dir, epoch, test_dis),
-                )
-            print(epoch, ">>>>>>>>----------BEST TEST MODEL SAVED---------<<<<<<<<")
+                estimator.train()
+                for parameter in estimator.parameters():
+                    parameter.grad = None
+            # reset optimizer for a new training loop
+            
+            
+            for rep in range(para.repeat_epoch):
+                for i, data in enumerate(dataloader, 0):
+                    print("Enter the new loop {0}".format(train_count+1))
+                    state, points, choose, img, target, model_points, idx = data
+                    if not state:
+                        continue
+                    else:
+                        points, choose, img, target, model_points, idx = (
+                            Variable(points).to(device),
+                            Variable(choose).to(device),
+                            Variable(img).to(device),
+                            Variable(target).to(device),
+                            Variable(model_points).to(device),
+                            Variable(idx).to(device),
+                        )
+                    
+                    pred_r, pred_t, pred_c, emb = estimator(img, points, choose, idx)
 
-        if best_test < para.decay_margin and not para.decay_start:
-            para.decay_start = True
-            para.lr *= para.lr_rate
-            para.w *= para.w_rate
-            optimizer = optim.Adam(estimator.parameters(), lr=para.lr)
+                    loss, dis, new_points, new_target = criterion(
+                        pred_r,
+                        pred_t,
+                        pred_c,
+                        target,
+                        model_points,
+                        idx,
+                        points,
+                        para.w,
+                        para.refine_start,
+                    )
+                    
+                    if para.refine_start:
+                        for ite in range(0, para.iteration):
+                            pred_r, pred_t = refiner(new_points, emb, idx)
+                            dis, new_points, new_target = criterion_refine(
+                                pred_r, pred_t, new_target, model_points, idx, new_points
+                            )
+                            dis.backward()
+                    else:
+                        loss.backward()
 
-        if best_test < para.refine_margin and not para.refine_start:
-            para.refine_start = True
-            para.batch_size = int(para.batch_size / para.iteration)
-            optimizer = optim.Adam(refiner.parameters(), lr=para.lr)
+                    train_dis_avg += dis.item()
+                    train_count += 1
+                
+                    if train_count % para.batch_size == 0:
+                        logger.info(
+                            "Train time {0} Epoch {1} Batch {2} Frame {3} Avg_dis:{4}".format(
+                                time.strftime(
+                                    "%Hh %Mm %Ss", time.gmtime(time.time() - st_time)
+                                ),
+                                epoch,
+                                int(train_count / para.batch_size),
+                                train_count,
+                                train_dis_avg / para.batch_size,
+                            )
+                        )
+                        train_dis_avg = 0
+                        
+                        optimizer.step()
 
-            if para.dataset == "ycb_nvidia_fat":
-                dataset = PoseDataset_ycb(
-                    "train",
-                    para.num_points,
-                    True,
-                    para.dataset_root,
-                    para.noise_trans,
-                    para.refine_start,
-                )
-                test_dataset = PoseDataset_ycb(
-                    "test",
-                    para.num_points,
-                    False,
-                    para.dataset_root,
-                    0.0,
-                    para.refine_start,
-                )
-            elif para.dataset == "ycb_label_fusion":
-                dataset = PoseDataset_ycb(
-                    "train",
-                    para.num_points,
-                    True,
-                    para.dataset_root,
-                    para.noise_trans,
-                    para.refine_start,
-                )
-                test_dataset = PoseDataset_ycb(
-                    "test",
-                    para.num_points,
-                    False,
-                    para.dataset_root,
-                    0.0,
-                    para.refine_start,
-                )
-            elif para.dataset == "custom_dataset":
-                dataset = PoseDataset_ycb(
-                    "train",
-                    para.num_points,
-                    True,
-                    para.dataset_root,
-                    para.noise_trans,
-                    para.refine_start,
-                )
-                test_dataset = PoseDataset_ycb(
-                    "test",
-                    para.num_points,
-                    False,
-                    para.dataset_root,
-                    0.0,
-                    para.refine_start,
-                )
+                        
+                        if para.refine_start:
+                            for parameter in refiner.parameters():
+                                parameter.grad = None
+                        else:
+                            for parameter in estimator.parameters():
+                                parameter.grad = None
+                        
+                        #optimizer.zero_grad()    
 
-            dataloader = torch.utils.data.DataLoader(
-                dataset,
-                batch_size=1,
-                shuffle=True,
-                num_workers=para.workers,
+                        del loss, dis
+                        torch.cuda.empty_cache()
+                        print('Done Batch {0}'.format(train_count / para.batch_size))
+                    
+                    print('Go to next loop {0}'.format(train_count+1))
+                
+                    if train_count != 0 and train_count % 1000 == 0:
+                        if para.refine_start:
+                            torch.save(
+                                {
+                                    "epoch":epoch+1,
+                                    "refiner_state_dict":refiner.state_dict(),
+                                },
+                                "{0}/pose_refine_model_current.pth".format(para.out_dir),
+                            )
+                        
+                        else:
+                            torch.save(
+                                {
+                                    "epoch":epoch+1,
+                                    "estimator_state_dict":estimator.state_dict(),
+                                },
+                                "{0}/pose_model_current.pth".format(para.out_dir),
+                            )
+                        
+                    
+                
+            print('>>>>>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<<<<<<<')
+            print(">>>>>>>>----------training phase epoch {0}  finish---------<<<<<<<<".format(epoch+1))
+
+            logger = setup_logger(
+                "epoch%d_test" % epoch,
+                os.path.join(para.log_dir, "epoch_%d_test_log.txt" % epoch),
             )
-            testdataloader = torch.utils.data.DataLoader(
-                test_dataset, batch_size=1, shuffle=False, num_workers=para.workers
-            )
-
-            para.sym_list = dataset.get_sym_list()
-            para.num_points_mesh = dataset.get_num_points_mesh()
-
-            print(
-                ">>>>>>>>----------Dataset loaded!---------<<<<<<<<\nlength of the training set: {0}\nlength of the testing set: {1}\nnumber of sample points on mesh: {2}\nsymmetry object list: {3}".format(
-                    len(dataset), len(test_dataset), para.num_points_mesh, para.sym_list
+            logger.info(
+                "Test time {0}".format(
+                    time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time))
+                    + ", "
+                    + "Testing started"
                 )
             )
+            
+            test_dis = 0.0
+            test_count = 0
+            estimator.eval()
+            refiner.eval()
+            with torch.no_grad():
+                for j, data in enumerate(testdataloader, 0):
+                    print("Enter the new loop {0}".format(test_count+1))
+                    state, points, choose, img, target, model_points, idx = data
+                    if not state:
+                            continue
+                    else: 
+                        points, choose, img, target, model_points, idx = (
+                            Variable(points).to(device),
+                            Variable(choose).to(device),
+                            Variable(img).to(device),
+                            Variable(target).to(device),
+                            Variable(model_points).to(device),
+                            Variable(idx).to(device),
+                        )
+                    pred_r, pred_t, pred_c, emb = estimator(img, points, choose, idx)
+                    _, dis, new_points, new_target = criterion(
+                        pred_r,
+                        pred_t,
+                        pred_c,
+                        target,
+                        model_points,
+                        idx,
+                        points,
+                        para.w,
+                        para.refine_start,
+                    )
 
-            criterion = Loss(para.num_points_mesh, para.sym_list)
-            criterion_refine = Loss_refine(para.num_points_mesh, para.sym_list)
+                    if para.refine_start:
+                        for ite in range(0, para.iteration):
+                            pred_r, pred_t = refiner(new_points, emb, idx)
+                            dis, new_points, new_target = criterion_refine(
+                                pred_r, pred_t, new_target, model_points, idx, new_points
+                            )
+
+                    test_dis += dis.item()
+                    logger.info(
+                        "Test time {0} Test Frame No.{1} dis:{2}".format(
+                            time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time)),
+                            test_count,
+                            dis,
+                        )
+                    )
+
+                    test_count += 1
+                    print("Done the test loop {0}".format(test_count))
+            test_dis = test_dis / test_count
+            writer.add_scalar("Testing Distance error", test_dis, epoch)
+            logger.info(
+                "Test time {0} Epoch {1} TEST FINISH Avg dis: {2}".format(
+                    time.strftime("%Hh %Mm %Ss", time.gmtime(time.time() - st_time)),
+                    epoch,
+                    test_dis,
+                )
+            )
+            
+            if test_dis <= best_test:
+                best_test = test_dis
+                if para.refine_start:
+                    torch.save(
+                        {
+                            "epoch":epoch+1,
+                            "refiner_state_dict":refiner.state_dict(),
+                        },
+                        "{0}/pose_refine_model_{1}_{2}.pth".format(
+                            para.out_dir, epoch, test_dis
+                        ),
+                    )
+                else:
+                    torch.save(
+                        {
+                            "epoch":epoch+1,
+                            "estimator_state_dict":estimator.state_dict(),
+                        },
+                        "{0}/pose_model_{1}_{2}.pth".format(para.out_dir, epoch, test_dis),
+                    )
+                print(epoch, ">>>>>>>>----------BEST TEST MODEL SAVED---------<<<<<<<<")
+            
+            if best_test < para.decay_margin and not para.decay_start:
+                para.decay_start = True
+                para.lr *= para.lr_rate
+                para.w *= para.w_rate
+                optimizer = optim.Adam(estimator.parameters(), lr=para.lr)
+
+            if best_test < para.refine_margin and not para.refine_start:
+                para.refine_start = True
+                para.batch_size = int(para.batch_size / para.iteration)
+                optimizer = optim.Adam(refiner.parameters(), lr=para.lr)
+
+                if para.dataset == "ycb_nvidia_fat":
+                    dataset = PoseDataset_ycb(
+                        "train",
+                        para.num_points,
+                        True,
+                        para.dataset_root,
+                        para.noise_trans,
+                        para.refine_start,
+                    )
+                    test_dataset = PoseDataset_ycb(
+                        "test",
+                        para.num_points,
+                        False,
+                        para.dataset_root,
+                        0.0,
+                        para.refine_start,
+                    )
+                elif para.dataset == "ycb_label_fusion":
+                    dataset = PoseDataset_ycb(
+                        "train",
+                        para.num_points,
+                        True,
+                        para.dataset_root,
+                        para.noise_trans,
+                        para.refine_start,
+                    )
+                    test_dataset = PoseDataset_ycb(
+                        "test",
+                        para.num_points,
+                        False,
+                        para.dataset_root,
+                        0.0,
+                        para.refine_start,
+                    )
+                elif para.dataset == "custom_dataset":
+                    dataset = PoseDataset_ycb(
+                        "train",
+                        para.num_points,
+                        True,
+                        para.dataset_root,
+                        para.noise_trans,
+                        para.refine_start,
+                    )
+                    test_dataset = PoseDataset_ycb(
+                        "test",
+                        para.num_points,
+                        False,
+                        para.dataset_root,
+                        0.0,
+                        para.refine_start,
+                    )
+
+                dataloader = torch.utils.data.DataLoader(
+                    dataset,
+                    batch_size=1,
+                    shuffle=True,
+                    num_workers=para.workers,
+                    pin_memory=True,
+                )
+                testdataloader = torch.utils.data.DataLoader(
+                    test_dataset, 
+                    batch_size=1, 
+                    shuffle=False, 
+                    num_workers=para.workers, 
+                    pin_memory=True
+                )
+
+                para.sym_list = dataset.get_sym_list()
+                para.num_points_mesh = dataset.get_num_points_mesh()
+
+                print(
+                    ">>>>>>>>----------Dataset loaded!---------<<<<<<<<\nlength of the training set: {0}\nlength of the testing set: {1}\nnumber of sample points on mesh: {2}\nsymmetry object list: {3}".format(
+                        len(dataset), len(test_dataset), para.num_points_mesh, para.sym_list
+                    )
+                )
+
+                criterion = Loss(para.num_points_mesh, para.sym_list)
+                criterion_refine = Loss_refine(para.num_points_mesh, para.sym_list)
+        writer.close()
 
 
 if __name__ == "__main__":
+    os.environ["OMP_NUM_THREADS"] = "1" 
+    os.environ["MKL_NUM_THREADS"] = "1"
+
     main()
+    
+ 
