@@ -1,11 +1,7 @@
 # DenseFusion
 
-<p align="center">
-	<img src ="assets/pullfig.png" width="1000" />
-</p>
-
-## News
-We have released the code and arXiv preprint for our new project [6-PACK](https://sites.google.com/view/6packtracking) which is based on this work and used for category-level 6D pose tracking.
+I re-implement this Architecture to work with NVIDIA-FaT dataset (Because I cannot download the original YCB dataset)
+All of my code is based on the original source code of Standford AI lab team. Please refer them and their paper for more information
 
 ## Table of Content
 - [Overview](#overview)
